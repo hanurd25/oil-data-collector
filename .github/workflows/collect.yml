@@ -9,8 +9,7 @@ concurrency:
 
 on:
   schedule:
-    # Oil futures trade almost 24h a day, Mon-Fri, so the window is much wider
-    # than a single stock exchange session. Every 30 min, 00:00-23:00 UTC, weekdays.
+    # Oil futures trade almost 24h a day, Mon-Fri.
     - cron: "*/30 0-23 * * 1-5"
   workflow_dispatch:
 
