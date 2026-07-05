@@ -3,21 +3,26 @@ import pandas as pd
 from datetime import datetime, timezone
 import os
 
-# Oil benchmarks — both are quoted in USD per barrel.
+# Energy benchmarks — NOTE: units differ per product, so they are NOT interchangeable.
 OIL = {
-    "BZ=F": {"name": "Brent Crude", "benchmark": "Brent"},  # international/European benchmark
-    "CL=F": {"name": "WTI Crude", "benchmark": "WTI"},      # US benchmark
+    "BZ=F": {"name": "Brent Crude",   "benchmark": "Brent",   "unit": "USD/barrel"},
+    "CL=F": {"name": "WTI Crude",     "benchmark": "WTI",     "unit": "USD/barrel"},
+    "NG=F": {"name": "Natural Gas",   "benchmark": "NatGas",  "unit": "USD/MMBtu"},
+    "HO=F": {"name": "Heating Oil",   "benchmark": "HeatOil", "unit": "USD/gallon"},
+    "RB=F": {"name": "RBOB Gasoline", "benchmark": "Gasoline","unit": "USD/gallon"},
 }
 
-# FX pairs used to convert the USD price into other currencies.
-# Each value is quoted as "how many units of that currency per 1 USD"
-# EXCEPT EURUSD, which yfinance quotes as USD per 1 EUR (so we invert it below).
+# FX rates are collected on their own and stored ONCE in data/fx_rates.csv.
+# We store the raw rate only; currency conversion is done later, at analysis time.
+# Quoting convention (as returned by yfinance):
+#   EUR -> "EURUSD=X" is USD per 1 EUR   (so EUR price = USD / rate)
+#   all others       -> "<CCY>=X" is CCY per 1 USD  (so CCY price = USD * rate)
 FX = {
-    "EUR": "EURUSD=X",  # USD per 1 EUR  -> EUR price = USD / rate
-    "NOK": "NOK=X",     # NOK per 1 USD  -> NOK price = USD * rate
-    "SEK": "SEK=X",     
-    "CNY": "CNY=X",
-    "JPY": "JPY=X",  
+    "eur": "EURUSD=X",
+    "nok": "NOK=X",
+    "sek": "SEK=X",
+    "cny": "CNY=X",
+    "jpy": "JPY=X",
 }
 
 
@@ -40,52 +45,57 @@ def fetch_close_series(ticker):
     return close
 
 
-def fetch_and_save():
+def _merge_dedupe_save(new_df, outfile):
+    """Append new rows to an existing CSV, drop duplicate timestamps, keep freshest."""
+    if os.path.exists(outfile):
+        existing = pd.read_csv(outfile, index_col=0, parse_dates=True)
+        new_df = pd.concat([existing, new_df])
+        new_df = new_df[~new_df.index.duplicated(keep="last")]
+        new_df = new_df.sort_index()
+    new_df.to_csv(outfile)
+    return len(new_df)
+
+
+def save_fx_rates():
+    """Fetch all FX rates and store them together in a single data/fx_rates.csv."""
+    cols = {}
+    for cur, tkr in FX.items():
+        series = fetch_close_series(tkr)
+        if series is not None:
+            cols[cur] = series
+    if not cols:
+        print("No FX data (markets likely closed)")
+        return
+    fx_df = pd.DataFrame(cols)          # one column per currency, aligned on timestamp
+    fx_df.index.name = "Datetime"
+    n = _merge_dedupe_save(fx_df, "data/fx_rates.csv")
+    print(f"Updated data/fx_rates.csv ({n} rows, {len(cols)} currencies)")
+
+
+def save_oil_prices():
+    """Fetch each energy benchmark and store its raw USD price + metadata."""
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    os.makedirs("data", exist_ok=True)
-
-    # Fetch all FX series once, up front, so every oil bar in this run uses
-    # the same (time-aligned) rates.
-    fx_series = {cur: fetch_close_series(tkr) for cur, tkr in FX.items()}
-
     for ticker, meta in OIL.items():
         df = yf.download(ticker, period="1d", interval="1m", progress=False)
         if df.empty:
             print(f"No data for {ticker} (market likely closed)")
             continue
         df = _flatten(df)
-
         df["price_usd"] = df["Close"]
-
-        # Derive each requested currency, time-aligning the FX rate to each oil bar.
-        for cur, series in fx_series.items():
-            if series is None:
-                df[f"rate_{cur.lower()}"] = pd.NA
-                df[f"price_{cur.lower()}"] = pd.NA
-                continue
-            aligned = series.reindex(df.index, method="ffill")
-            df[f"rate_{cur.lower()}"] = aligned.values
-            if cur == "EUR":
-                # EURUSD is USD per 1 EUR, so EUR price = USD / rate
-                df[f"price_{cur.lower()}"] = df["price_usd"] / df[f"rate_{cur.lower()}"]
-            else:
-                # e.g. NOK=X is NOK per 1 USD, so NOK price = USD * rate
-                df[f"price_{cur.lower()}"] = df["price_usd"] * df[f"rate_{cur.lower()}"]
-
         df["ticker"] = ticker
         df["benchmark"] = meta["benchmark"]
         df["name"] = meta["name"]
+        df["unit"] = meta["unit"]
         df["fetched_at_utc"] = timestamp
-
         outfile = f"data/{meta['benchmark']}.csv"
-        if os.path.exists(outfile):
-            existing = pd.read_csv(outfile, index_col=0, parse_dates=True)
-            df = pd.concat([existing, df])
-            df = df[~df.index.duplicated(keep="last")]  # dedupe on timestamp, keep freshest
-            df = df.sort_index()
+        n = _merge_dedupe_save(df, outfile)
+        print(f"Updated {outfile} ({n} rows)")
 
-        df.to_csv(outfile)
-        print(f"Updated {outfile} ({len(df)} rows)")
+
+def fetch_and_save():
+    os.makedirs("data", exist_ok=True)
+    save_fx_rates()     # rates stored once, separately
+    save_oil_prices()   # raw USD prices only
 
 
 if __name__ == "__main__":
