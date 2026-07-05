@@ -14,9 +14,10 @@ OIL = {
 # EXCEPT EURUSD, which yfinance quotes as USD per 1 EUR (so we invert it below).
 FX = {
     "EUR": "EURUSD=X",  # USD per 1 EUR  -> EUR price = USD / rate
-    # add more if you want, e.g.:
-    # "NOK": "NOK=X",   # NOK per 1 USD  -> NOK price = USD * rate
-    # "SEK": "SEK=X",   # SEK per 1 USD  -> SEK price = USD * rate
+    "NOK": "NOK=X",     # NOK per 1 USD  -> NOK price = USD * rate
+    "SEK": "SEK=X",     
+    "CNY": "CNY=X",
+    "JPY": "JPY=X",  
 }
 
 
