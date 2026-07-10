@@ -1,21 +1,4 @@
-"""
-visu.py — spectacular static charts from the collected energy data, saved as PNG.
-Pure matplotlib: no Kaleido, no Chrome, no browser. Just writes an image file.
 
-Modes:
-  grid        : each benchmark in its OWN panel, own axis + unit (small multiples). [default]
-  candlestick : one benchmark as OHLC candlesticks + volume sub-panel.
-  compare     : all benchmarks rebased to 100 on one axis (relative moves).
-
-Optionally converts prices into another currency using data/fx_rates.csv.
-
-Usage:
-    python visu.py                                        # grid, USD -> oil_chart.png
-    python visu.py --mode grid --currency NOK
-    python visu.py --mode candlestick --benchmark Brent
-    python visu.py --mode compare --currency EUR
-    python visu.py --show
-"""
 import argparse
 import math
 import os
