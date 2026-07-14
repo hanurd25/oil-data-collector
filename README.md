@@ -96,10 +96,35 @@ Optionally converts prices into another currency using data/fx_rates.csv.
 
 
 ```powershell
-python visu.py --mode grid --currency NOK
-    python visu.py --mode candlestick --benchmark Brent
-    python visu.py --mode compare --currency EUR
-    python visu.py --show                                 # also pop a window
+visu.py — static charts from the collected energy data, saved as PNG.
+Pure matplotlib: no Kaleido, no Chrome, no browser. Just writes an image file.
+
+Modes:
+  grid        : each selected benchmark in its OWN panel, own axis + unit. [default]
+  candlestick : one benchmark as OHLC candlesticks + volume sub-panel.
+  compare     : selected benchmarks rebased to 100 on one axis (relative moves).
+
+Key options:
+  --days N        only plot the last N days of data (default: all)
+  --daycount      x-axis shows elapsed day number (1, 2, 3...) instead of calendar dates
+  --only A[,B]    only these benchmarks (default: all five)
+  --currency CUR  convert prices via data/fx_rates.csv
+
+Usage:
+    python visu.py                                     # all benchmarks, all data
+    python visu.py --days 3                            # last 3 days only
+    python visu.py --only Brent                        # just Brent, single panel
+    python visu.py --only Brent,WTI --days 5           # two benchmarks, last 5 days
+    python visu.py --daycount                          # x-axis = 1, 2, 3, ... not dates
+    python visu.py --only Brent --daycount --days 7
+    python visu.py --mode candlestick --benchmark Brent --days 1
+    python visu.py --mode compare --currency EUR --days 7 --daycount
+
+
+    Excamples: python visu.py --only NatGas --daycount
+              python visu.py --only Brent,WTI --daycount
+              python visu.py --only NatGas,Brent --daycount
+              python visu.py --only NatGas
 ```
 ## License
 

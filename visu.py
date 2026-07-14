@@ -1,4 +1,6 @@
+"""
 
+"""
 import argparse
 import math
 import os
@@ -35,12 +37,36 @@ plt.rcParams.update({
 })
 
 
-def _load(benchmark, data_dir):
+def _load(benchmark, data_dir, days=None):
+    """Load a benchmark CSV, optionally trimmed to the last `days` days."""
     path = os.path.join(data_dir, f"{benchmark}.csv")
     if not os.path.exists(path):
         return None
     df = pd.read_csv(path, index_col=0, parse_dates=True)
-    return df if not df.empty else None
+    if df.empty:
+        return None
+    if days is not None:
+        cutoff = df.index.max() - pd.Timedelta(days=days)
+        df = df[df.index >= cutoff]
+        if df.empty:
+            return None
+    return df
+
+
+def _select(only):
+    """Resolve the --only argument into a validated list of benchmarks."""
+    if not only:
+        return BENCHMARKS
+    lookup = {b.lower(): b for b in BENCHMARKS}
+    chosen = []
+    for raw in only.split(","):
+        key = raw.strip().lower()
+        if key not in lookup:
+            raise SystemExit(
+                f"Unknown benchmark '{raw.strip()}'. Choose from: {', '.join(BENCHMARKS)}"
+            )
+        chosen.append(lookup[key])
+    return chosen
 
 
 def _convert(df, currency, data_dir):
@@ -66,17 +92,45 @@ def _theme_ax(ax):
     ax.xaxis.set_major_locator(MaxNLocator(6))
 
 
-def grid(currency, data_dir):
-    loaded = [(bm, _load(bm, data_dir)) for bm in BENCHMARKS]
+def _theme_ax_daycount(ax):
+    """Same theme, but the x-axis is a plain numeric day counter (1, 2, 3...)."""
+    ax.set_facecolor(PANEL)
+    ax.grid(True, color=GRID, linewidth=0.6, alpha=0.7)
+    ax.tick_params(colors=MUTED, labelsize=8.5)
+    for s in ax.spines.values():
+        s.set_color(GRID)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_xlabel("Day", color=MUTED, fontsize=9)
+
+
+def _to_daycount(index, origin):
+    """Convert a datetime index into elapsed days since `origin`, starting at day 1."""
+    return (index - origin).total_seconds() / 86400.0 + 1.0
+
+
+def _span_label(days):
+    return f"last {days} day{'s' if days != 1 else ''}" if days else "all data"
+
+
+def grid(currency, data_dir, days=None, only=None, daycount=False):
+    names = _select(only)
+    loaded = [(bm, _load(bm, data_dir, days)) for bm in names]
     loaded = [(bm, df) for bm, df in loaded if df is not None]
     if not loaded:
-        raise SystemExit(f"No benchmark data found in {data_dir}/")
+        raise SystemExit(f"No data found in {data_dir}/ for: {', '.join(names)}")
 
-    cols = 2
+    # A single benchmark gets one big panel; more than one uses a 2-col grid.
+    cols = 1 if len(loaded) == 1 else 2
     rows = math.ceil(len(loaded) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(13, 3.1 * rows))
+    height = 6.5 if len(loaded) == 1 else 3.1 * rows
+
+    fig, axes = plt.subplots(rows, cols, figsize=(13, height))
     fig.patch.set_facecolor(BG)
     axes = axes.flatten() if hasattr(axes, "flatten") else [axes]
+
+    # For day-count mode, day 1 starts at the earliest timestamp across ALL selected
+    # benchmarks, so every panel shares the same day numbering.
+    origin = min(df.index.min() for _, df in loaded) if daycount else None
 
     cur_label = currency.upper()
     for i, (bm, df) in enumerate(loaded):
@@ -85,21 +139,23 @@ def grid(currency, data_dir):
         price = price.dropna()
         color = PALETTE.get(bm, ACCENT)
 
-        ax.plot(price.index, price, color=color, linewidth=1.7)
-        # soft gradient-style fill under the line for a richer look
-        ax.fill_between(price.index, price, price.min(), color=color, alpha=0.08)
+        x = _to_daycount(price.index, origin) if daycount else price.index
 
-        # latest value marker + label
+        ax.plot(x, price, color=color, linewidth=1.7)
+        ax.fill_between(x, price, price.min(), color=color, alpha=0.08)
+
         last = price.iloc[-1]
-        ax.scatter([price.index[-1]], [last], color=color, s=22, zorder=5)
-        ax.annotate(f" {last:,.2f}", xy=(price.index[-1], last), color=color,
+        last_x = x[-1] if daycount else price.index[-1]
+        ax.scatter([last_x], [last], color=color, s=22, zorder=5)
+        ax.annotate(f" {last:,.2f}", xy=(last_x, last), color=color,
                     fontsize=10, fontweight="bold", va="center")
 
-        _theme_ax(ax)
+        _theme_ax_daycount(ax) if daycount else _theme_ax(ax)
         unit = (df["unit"].iloc[-1] if "unit" in df else "").replace("USD", cur_label)
-        ax.set_title(f"{bm}", color=TEXT, fontsize=13, fontweight="bold", loc="left", pad=8)
+        title_size = 16 if len(loaded) == 1 else 13
+        ax.set_title(bm, color=TEXT, fontsize=title_size, fontweight="bold", loc="left", pad=8)
         ax.text(0.0, 1.02, unit, transform=ax.transAxes, color=MUTED, fontsize=9)
-        # a little headroom so the label doesn't hug the top
+
         lo, hi = price.min(), price.max()
         pad = (hi - lo) * 0.08 or 0.5
         ax.set_ylim(lo - pad, hi + pad)
@@ -109,17 +165,19 @@ def grid(currency, data_dir):
 
     fig.suptitle("Energy benchmarks — price levels",
                  color=TEXT, fontsize=19, fontweight="bold", x=0.065, ha="left", y=0.99)
-    fig.text(0.065, 0.955, f"each panel on its own axis · priced in {cur_label}",
+    fig.text(0.065, 0.945 if len(loaded) == 1 else 0.955,
+             f"each panel on its own axis · priced in {cur_label} · {_span_label(days)}",
              color=MUTED, fontsize=11, ha="left")
-    fig.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.07,
+    fig.subplots_adjust(left=0.07, right=0.97, top=0.88 if len(loaded) == 1 else 0.92,
+                        bottom=0.10 if len(loaded) == 1 else 0.07,
                         hspace=0.55, wspace=0.16)
     return fig
 
 
-def candlestick(benchmark, currency, data_dir):
-    df = _load(benchmark, data_dir)
+def candlestick(benchmark, currency, data_dir, days=None, daycount=False):
+    df = _load(benchmark, data_dir, days)
     if df is None:
-        raise SystemExit(f"No data found for {benchmark} in {data_dir}/")
+        raise SystemExit(f"No data found for {benchmark} in {data_dir}/ ({_span_label(days)})")
     price, cur = _convert(df, currency, data_dir)
     unit = (df["unit"].iloc[-1] if "unit" in df else "price").replace("USD", cur)
     name = df["name"].iloc[-1] if "name" in df else benchmark
@@ -134,7 +192,11 @@ def candlestick(benchmark, currency, data_dir):
         fig, ax = plt.subplots(figsize=(13, 7)); axv = None
     fig.patch.set_facecolor(BG)
 
-    x = mdates.date2num(df.index.to_pydatetime())
+    if daycount:
+        origin = df.index.min()
+        x = _to_daycount(df.index, origin).values
+    else:
+        x = mdates.date2num(df.index.to_pydatetime())
     if have_ohlc:
         factor = (price / df["Close"]).values
         o = df["Open"].values * factor; h = df["High"].values * factor
@@ -146,52 +208,65 @@ def candlestick(benchmark, currency, data_dir):
             ax.add_patch(Rectangle((xi - w/2, min(oi, ci)), w, max(abs(ci - oi), 1e-9),
                                    facecolor=col, edgecolor=col, linewidth=0.5))
     else:
-        ax.plot(df.index, price, color=PALETTE.get(benchmark, ACCENT), linewidth=1.6)
+        ax.plot(x, price, color=PALETTE.get(benchmark, ACCENT), linewidth=1.6)
 
     last = price.dropna().iloc[-1]
-    ax.annotate(f" {last:,.2f} {cur}", xy=(price.dropna().index[-1], last),
+    last_x = x[-1] if daycount else price.dropna().index[-1]
+    ax.annotate(f" {last:,.2f} {cur}", xy=(last_x, last),
                 color=ACCENT, fontsize=12, fontweight="bold", va="center")
 
-    _theme_ax(ax)
+    _theme_ax_daycount(ax) if daycount else _theme_ax(ax)
     ax.set_ylabel(unit, color=TEXT, fontsize=10)
     ax.set_title(name, color=TEXT, fontsize=18, fontweight="bold", loc="left", pad=14)
-    ax.text(0.0, 1.015, f"Front-month futures · priced in {cur} · {unit}",
+    ax.text(0.0, 1.015,
+            f"Front-month futures · priced in {cur} · {unit} · {_span_label(days)}",
             transform=ax.transAxes, color=MUTED, fontsize=10)
 
     if axv is not None:
-        axv.bar(df.index, df["Volume"], width=(1/24/60), color=MUTED, alpha=0.5)
-        _theme_ax(axv)
+        vol_w = (1/24/60) if not daycount else (1/24/60)
+        axv.bar(x, df["Volume"], width=vol_w, color=MUTED, alpha=0.5)
+        _theme_ax_daycount(axv) if daycount else _theme_ax(axv)
         axv.set_ylabel("Volume", color=TEXT, fontsize=9)
 
     fig.subplots_adjust(left=0.07, right=0.97, top=0.90, bottom=0.12)
     return fig
 
 
-def compare(currency, data_dir):
+def compare(currency, data_dir, days=None, only=None, daycount=False):
+    names = _select(only)
     fig, ax = plt.subplots(figsize=(13, 7))
     fig.patch.set_facecolor(BG)
     n = 0; cur_label = currency.upper()
-    for bm in BENCHMARKS:
-        df = _load(bm, data_dir)
+    series = []
+    for bm in names:
+        df = _load(bm, data_dir, days)
         if df is None:
             continue
         price, cur_label = _convert(df, currency, data_dir)
         price = price.dropna()
         if price.empty:
             continue
+        series.append((bm, price))
+    if not series:
+        raise SystemExit(f"No data found in {data_dir}/ for: {', '.join(names)}")
+
+    # shared origin so all lines use the same day numbering
+    origin = min(p.index.min() for _, p in series) if daycount else None
+
+    for bm, price in series:
         rebased = price / price.iloc[0] * 100.0
-        ax.plot(rebased.index, rebased, color=PALETTE.get(bm), linewidth=2.0, label=bm)
+        x = _to_daycount(rebased.index, origin) if daycount else rebased.index
+        ax.plot(x, rebased, color=PALETTE.get(bm), linewidth=2.0, label=bm)
         n += 1
-    if n == 0:
-        raise SystemExit(f"No benchmark data found in {data_dir}/")
 
     ax.axhline(100, color=MUTED, linewidth=1, linestyle=":")
-    _theme_ax(ax)
+    _theme_ax_daycount(ax) if daycount else _theme_ax(ax)
     ax.set_ylabel("Rebased to 100 at start", color=TEXT, fontsize=10)
     ax.set_title("Energy benchmarks — relative performance",
                  color=TEXT, fontsize=18, fontweight="bold", loc="left", pad=14)
     ax.text(0.0, 1.015,
-            f"rebased to 100 · priced in {cur_label} · only RELATIVE moves are comparable",
+            f"rebased to 100 · priced in {cur_label} · {_span_label(days)} · "
+            f"only RELATIVE moves are comparable",
             transform=ax.transAxes, color=MUTED, fontsize=10)
     ax.legend(facecolor=PANEL, edgecolor=GRID, labelcolor=TEXT, loc="upper left")
     fig.subplots_adjust(left=0.07, right=0.97, top=0.90, bottom=0.12)
@@ -201,23 +276,29 @@ def compare(currency, data_dir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["grid", "candlestick", "compare"], default="grid")
-    ap.add_argument("--benchmark", default="Brent")
+    ap.add_argument("--benchmark", default="Brent", help="for candlestick mode")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated benchmarks for grid/compare, e.g. 'Brent' or 'Brent,WTI'")
+    ap.add_argument("--days", type=float, default=None,
+                    help="only plot the last N days of data (default: all)")
+    ap.add_argument("--daycount", action="store_true",
+                    help="x-axis shows elapsed day number (1, 2, 3...) instead of dates")
     ap.add_argument("--currency", default="USD", help="USD/EUR/NOK/SEK/CNY/JPY")
     ap.add_argument("--data-dir", default="data")
     ap.add_argument("--out", default="oil_chart.png")
     ap.add_argument("--dpi", type=int, default=160)
-    ap.add_argument("--show", action="store_true")
+    ap.add_argument("--show", action="store_true", help="also open a window (needs tkinter)")
     args = ap.parse_args()
 
     if args.show:
         matplotlib.use("TkAgg")
 
     if args.mode == "grid":
-        fig = grid(args.currency, args.data_dir)
+        fig = grid(args.currency, args.data_dir, args.days, args.only, args.daycount)
     elif args.mode == "candlestick":
-        fig = candlestick(args.benchmark, args.currency, args.data_dir)
+        fig = candlestick(args.benchmark, args.currency, args.data_dir, args.days, args.daycount)
     else:
-        fig = compare(args.currency, args.data_dir)
+        fig = compare(args.currency, args.data_dir, args.days, args.only, args.daycount)
 
     fig.savefig(args.out, dpi=args.dpi, facecolor=fig.get_facecolor())
     print(f"Wrote {os.path.abspath(args.out)}")
